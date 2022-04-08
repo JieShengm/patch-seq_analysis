@@ -1,3 +1,4 @@
 # patch-seq_analysis
 
-- [x] .R
+- [ ] Order files
+- [ ] Update readme
