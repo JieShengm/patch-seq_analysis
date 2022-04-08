@@ -1,0 +1,348 @@
+---
+title: "Patch-seq"
+author: "Jie Sheng"
+date: "10/13/2021"
+output: html_document
+---
+```{r}
+rm(list = ls())
+setwd("~/Desktop/Xinyu_Patchseq/")
+
+library("Seurat")
+library("dplyr")
+library("biomaRt")
+library("ggplot2")
+library("readxl")
+
+efeatures <- read_excel("./combined_data_10122021.xlsx")
+all_the_sequenced_libraries <- read_excel("all the sequenced libraries.xlsx")
+```
+
+# Human
+```{r}
+human_expr = read.table("./NewcorrectID_human_sc_gene_counts.txt",row.names = 2)[,-1]
+colnames(human_expr) = gsub("X","",colnames(human_expr))
+g.id.h = colnames(human_expr)
+
+e.human = efeatures[efeatures$Species == "human",]
+e.id.h = union(e.human$`ID for Seq file`,e.human$`ID for replaced seq file`)
+
+human_lib = (all_the_sequenced_libraries$Human[-c(1,2)])
+human_lib = human_lib[is.na(human_lib)==FALSE]
+human_lib_rep = (all_the_sequenced_libraries$...6[-c(1,2)])
+human_lib_rep = human_lib_rep [is.na(human_lib_rep)==FALSE]
+lib.h = union(human_lib, human_lib_rep)
+
+length(lib.h) #168
+human_id = intersect(intersect(lib.h,g.id.h),e.id.h)#156
+
+ind.h.lib = which(e.human$`ID for Seq file`%in%human_id)
+ind.h.lib_rep = which(e.human$`ID for replaced seq file`%in%human_id)
+ind.h.dup = intersect(ind.h.lib, ind.h.lib_rep) #11
+ind.h.uni = union(ind.h.lib, ind.h.lib_rep) #145
+
+filter_human = data.frame(ids=c(e.human$`ID for Seq file`[ind.h.dup],e.human$`ID for replaced seq file`[ind.h.dup]),
+                           index = c(ind.h.dup,ind.h.dup))
+ncount = nfeature = c()
+for(i in 1:dim(filter_human)[1]){
+  ncount[i] = sum(human_expr[,filter_human$ids[i]])
+}
+filter_human$ncount = ncount
+
+whichmin = tapply(filter_human$ncount, filter_human$index, min)
+filter_index = c()
+for(i in 1:length(whichmin)){
+  filter_index[i] = 2*i-2+ whichmin[i]
+}
+
+human_id = human_id[human_id%in%filter_human$ids[filter_human$ncount%in%whichmin]==FALSE]
+
+e.human = as.data.frame(e.human[ind.h.uni,])
+e.human$`ID for replaced seq file`[e.human$`ID for Seq file`%in%human_id]=e.human$`ID for Seq file`[e.human$`ID for Seq file`%in%human_id]
+sum(e.human$`ID for replaced seq file`%in%human_id)
+rownames(e.human) = e.human$`ID for replaced seq file`
+e.human[,c(1:5,11:12,14:18)] = NULL
+
+human_expr = human_expr[,human_id]
+```
+
+```{r}
+ensembl.genes_human=rownames(human_expr)
+ensembl_human = useMart( "ensembl", dataset = "hsapiens_gene_ensembl", host = 'uswest.ensembl.org')
+genemap_human <- getBM( attributes = c("ensembl_gene_id", "external_gene_name"), filters = "ensembl_gene_id", values =ensembl.genes_human, mart = ensembl_human)
+genemap_human=genemap_human[genemap_human$external_gene_name!="",]
+
+human_expr=human_expr[ensembl.genes_human%in%genemap_human$ensembl_gene_id,]
+human_expr=human_expr[genemap_human$ensembl_gene_id,]
+rownames(human_expr)=make.names(genemap_human$external_gene_name, unique=TRUE)
+```
+
+```{r}
+human_seuobj = CreateSeuratObject(human_expr, min.cells = 10)
+#VlnPlot(human_seuobj, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+#p1 <- FeatureScatter(human_seuobj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#p1
+
+human_seuobj <- subset(human_seuobj, subset = nFeature_RNA > 20)
+human_seuobj <- NormalizeData(human_seuobj)
+human_seuobj <- FindVariableFeatures(human_seuobj, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(human_seuobj)
+human_seuobj <- ScaleData(human_seuobj, features = all.genes)
+
+#top10 <- head(VariableFeatures(human_seuobj), 10)
+#p2 <- VariableFeaturePlot(human_seuobj)
+#p3 <- LabelPoints(plot = p2, points = top10, repel = TRUE)
+#p2 + p3
+```
+
+```{r}
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+human_seuobj <- CellCycleScoring(human_seuobj, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE, verbose = TRUE)
+human_seuobj <- RunPCA(human_seuobj, features = c(s.genes, g2m.genes), verbose = TRUE)
+p4=DimPlot(human_seuobj,reduction="pca")
+
+human_seuobj <- ScaleData(human_seuobj, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(human_seuobj), verbose=TRUE)
+human_seuobj <- RunPCA(human_seuobj, features = c(s.genes, g2m.genes),verbose = TRUE)
+p5=DimPlot(human_seuobj,reduction="pca")
+
+p4+p5
+```
+
+```{r}
+human_seuobj <- RunPCA(human_seuobj, features = VariableFeatures(object = human_seuobj))
+DimPlot(human_seuobj, reduction = "pca")
+#DimHeatmap(human_seuobj, dims = 1:10, cells = 500, balanced = TRUE)
+#human_seuobj <- JackStraw(human_seuobj, dims = 30, num.replicate = 100)
+#human_seuobj <- ScoreJackStraw(human_seuobj, dims = 1:30)
+#JackStrawPlot(human_seuobj, dims = 1:30)
+#ElbowPlot(human_seuobj, ndims = 30)
+```
+
+```{r}
+human_seuobj <- FindNeighbors(human_seuobj, dims = 1:20)
+human_seuobj <- FindClusters(human_seuobj, resolution = 0.8)
+
+human_seuobj <- RunUMAP(human_seuobj, dims = 1:20)
+p6=DimPlot(human_seuobj, reduction = "umap")
+p6
+```
+
+```{r}
+human_all.markers = FindAllMarkers(object = human_seuobj)
+human_all.markers = human_all.markers[human_all.markers$p_val_adj < 0.05,]
+
+FeaturePlot(human_seuobj, features = c("SOX2","EOMES","MKI67","HOPX","PDGFRA","AQP4","BCL11B","SATB2","NEUROD6","DLX6-AS1"))
+
+human_all.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(human_seuobj, features = top10$gene) + NoLegend()
+```
+
+```{r}
+human_umap = as.data.frame(human_seuobj@reductions[["umap"]]@cell.embeddings)
+```
+
+```{r}
+e.human$UMAP1 = human_umap[rownames(e.human),]$UMAP_1
+e.human$UMAP2 = human_umap[rownames(e.human),]$UMAP_2
+e.human$`Resting Membrane Potential (mV)` = abs(e.human$`Resting Membrane Potential (mV)`)
+e.human$`INa(pA/pF)`= abs(e.human$`INa(pA/pF)`)
+
+colnames(e.human)
+pe1=ggplot(e.human, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Days in vitro (DIV)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Days in vitro (DIV)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe2=ggplot(e.human, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Gestation Day (GD)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Gestation Day (GD)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe3=ggplot(e.human, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Membrane Capacitance (pF)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Membrane Capacitance (pF)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe4=ggplot(e.human, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Input Resistance (MΩ)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Input Resistance (MΩ)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe5=ggplot(e.human, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Resting Membrane Potential (mV)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Resting Membrane Potential (mV)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe6 =ggplot(e.human, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `INa(pA/pF)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + labs(title="INa(pA/pF)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+grid.arrange(pe1, pe2, pe3, pe4, pe5, pe6, nrow = 3)
+```
+
+# Monkey
+```{r}
+monkey_expr = read.table("./NewcorrectID_monkey_gene_counts.txt",row.names = 2)[,-1]
+colnames(monkey_expr) = gsub("X","",colnames(monkey_expr))
+rownames(monkey_expr) = gsub("[.].","",rownames(monkey_expr))
+g.id.m =colnames(monkey_expr)
+
+e.monkey = efeatures[efeatures$Species == "monkey",]
+e.id.m = union(e.monkey$`ID for Seq file`,e.monkey$`ID for replaced seq file`)
+
+monkey_lib = (all_the_sequenced_libraries$Monke[-c(1,2)])
+monkey_lib_rep = (all_the_sequenced_libraries$...2[-c(1,2)])
+monkey_lib_rep = monkey_lib_rep [is.na(monkey_lib_rep)==FALSE]
+monkey_lib =monkey_lib[is.na(monkey_lib)==FALSE]
+lib.m = union(monkey_lib, monkey_lib_rep)
+
+length(lib.m) #303
+monkey_id = intersect(intersect(lib.m,g.id.m),e.id.m) #286
+
+ind.m.lib = which(e.monkey$`ID for Seq file`%in%monkey_id) #269
+ind.m.lib_rep = which(e.monkey$`ID for replaced seq file`%in%monkey_id) #21
+ind.m.dup = intersect(ind.m.lib, ind.m.lib_rep) #16
+ind.m.uni = union(ind.m.lib, ind.m.lib_rep) #270
+
+filter_monkey = data.frame(ids=c(e.monkey$`ID for Seq file`[ind.m.dup],e.monkey$`ID for replaced seq file`[ind.m.dup]),
+                           index = c(ind.m.dup,ind.m.dup))
+ncount = nfeature = c()
+for(i in 1:dim(filter_monkey)[1]){
+  ncount[i] = sum(monkey_expr[,filter_monkey$ids[i]])
+}
+filter_monkey$ncount = ncount
+
+whichmin = tapply(filter_monkey$ncount, filter_monkey$index, min)
+filter_index = c()
+for(i in 1:length(whichmin)){
+  filter_index[i] = 2*i-2+ whichmin[i]
+}
+
+monkey_id = monkey_id[monkey_id%in%filter_monkey$ids[filter_monkey$ncount%in%whichmin]==FALSE]
+
+e.monkey = as.data.frame(e.monkey[ind.m.uni,])
+e.monkey$`ID for replaced seq file`[e.monkey$`ID for Seq file`%in%monkey_id]=e.monkey$`ID for Seq file`[e.monkey$`ID for Seq file`%in%monkey_id]
+sum(e.monkey$`ID for replaced seq file`%in%monkey_id)
+rownames(e.monkey) = e.monkey$`ID for replaced seq file`
+e.monkey[,c(1:5,11:12,14:18)] = NULL
+
+monkey_expr = monkey_expr[,monkey_id]
+```
+
+```{r}
+ensembl.genes_monkey=gsub("[.].","",rownames(monkey_expr))
+ensembl_monkey = useMart(biomart="ensembl", dataset = "mmulatta_gene_ensembl", host = 'uswest.ensembl.org')
+genemap_monkey <- getBM( attributes = c("ensembl_gene_id", "external_gene_name"), filters = "ensembl_gene_id", values =ensembl.genes_monkey, mart = ensembl_monkey)
+genemap_monkey=genemap_monkey[genemap_monkey$external_gene_name!="",]
+monkey_expr=monkey_expr[ensembl.genes_monkey%in%genemap_monkey$ensembl_gene_id,]
+monkey_expr=monkey_expr[genemap_monkey$ensembl_gene_id,]
+rownames(monkey_expr)=make.names(genemap_monkey$external_gene_name, unique=TRUE)
+```
+
+```{r}
+monkey_seuobj = CreateSeuratObject(monkey_expr, min.cells = 10)
+#VlnPlot(monkey_seuobj, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+#p7 <- FeatureScatter(monkey_seuobj, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+#p7
+```
+
+```{r}
+monkey_seuobj <- subset(monkey_seuobj, subset = nFeature_RNA > 20)
+monkey_seuobj <- NormalizeData(monkey_seuobj)
+monkey_seuobj <- FindVariableFeatures(monkey_seuobj, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(monkey_seuobj)
+monkey_seuobj <- ScaleData(monkey_seuobj, features = all.genes)
+
+#top10 <- head(VariableFeatures(monkey_seuobj), 10)
+#p8 <- VariableFeaturePlot(monkey_seuobj)
+#p9 <- LabelPoints(plot = p8, points = top10, repel = TRUE)
+#p8 + p9
+```
+
+```{r}
+monkey_seuobj <- CellCycleScoring(monkey_seuobj, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE, verbose = TRUE,)
+monkey_seuobj <- RunPCA(monkey_seuobj, features = c(s.genes, g2m.genes), verbose = TRUE)
+p10=DimPlot(monkey_seuobj,reduction="pca")
+
+monkey_seuobj <- ScaleData(monkey_seuobj, vars.to.regress = c("S.Score", "G2M.Score"), features = rownames(monkey_seuobj), verbose=TRUE,)
+monkey_seuobj <- RunPCA(monkey_seuobj, features = c(s.genes, g2m.genes),verbose = TRUE,)
+p11=DimPlot(monkey_seuobj,reduction="pca")
+
+p10+p11
+```
+
+```{r}
+monkey_seuobj <- RunPCA(monkey_seuobj, features = VariableFeatures(object = monkey_seuobj))
+DimPlot(monkey_seuobj, reduction = "pca")
+#DimHeatmap(monkey_seuobj, dims = 1:10, cells = 500, balanced = TRUE)
+#monkey_seuobj <- JackStraw(monkey_seuobj, dims = 30, num.replicate = 100)
+#monkey_seuobj <- ScoreJackStraw(monkey_seuobj, dims = 1:30)
+#JackStrawPlot(monkey_seuobj, dims = 1:30)
+#ElbowPlot(monkey_seuobj, ndims = 30)
+
+monkey_seuobj <- FindNeighbors(monkey_seuobj, dims = 1:20)
+monkey_seuobj <- FindClusters(monkey_seuobj, resolution = 0.5)
+
+monkey_seuobj <- RunUMAP(monkey_seuobj, dims = 1:20)
+p12=DimPlot(monkey_seuobj, reduction = "umap")
+p12
+```
+
+```{r}
+monkey_all.markers = FindAllMarkers(object = monkey_seuobj)
+monkey_all.markers = monkey_all.markers[monkey_all.markers$p_val_adj < 0.05,]
+
+monkey_all.markers %>%
+  group_by(cluster) %>%
+  top_n(n = 10, wt = avg_log2FC) -> top10
+DoHeatmap(monkey_seuobj, features = top10$gene) + NoLegend()
+```
+
+```{r}
+monkey_umap = as.data.frame(monkey_seuobj@reductions[["umap"]]@cell.embeddings)
+
+ggplot(monkey_umap, aes(x=UMAP_1, y=UMAP_2)) + geom_point()
+```
+
+```{r}
+e.monkey$UMAP1 = monkey_umap[rownames(e.monkey),]$UMAP_1
+e.monkey$UMAP2 = monkey_umap[rownames(e.monkey),]$UMAP_2
+e.monkey$`Resting Membrane Potential (mV)` = abs(e.monkey$`Resting Membrane Potential (mV)`)
+e.monkey$`INa(pA/pF)`= abs(e.monkey$`INa(pA/pF)`)
+
+colnames(e.monkey)
+pe1=ggplot(e.monkey, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Days in vitro (DIV)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Days in vitro (DIV)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe2=ggplot(e.monkey, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Gestation Day (GD)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Gestation Day (GD)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe3=ggplot(e.monkey, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Membrane Capacitance (pF)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Membrane Capacitance (pF)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe4=ggplot(e.monkey, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Input Resistance (MΩ)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Input Resistance (MΩ)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe5=ggplot(e.monkey, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `Resting Membrane Potential (mV)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + ggtitle("Resting Membrane Potential (mV)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+
+pe6 =ggplot(e.monkey, aes(x=UMAP1, y=UMAP2)) + geom_point(aes(colour = `INa(pA/pF)`))+
+  scale_colour_gradient(low = "grey", high = "blue") + labs(title="INa(pA/pF)") + 
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), axis.line = element_line(colour = "black"),legend.title = element_blank(),plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+monkey_clustering = as.vector(monkey_seuobj@active.ident)
+human_clustering = as.vector(human_seuobj@active.ident)
+human_clustering = as.data.frame(human_clustering)
+human_clustering$col = human_clustering$human_clustering
+human_clustering$col[human_clustering$col == "0"]="#1B9E77"
+human_clustering$col[human_clustering$col == "1"]= "#D95F02"
+human_clustering$col[human_clustering$col == "2"] = "#7570B3"
+human_clustering$col[human_clustering$col == "3"] = "#E7298A"
+```
