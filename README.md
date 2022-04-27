@@ -1,4 +1,7 @@
 # patch-seq_analysis
 
-- [ ] Order files
+- [x] Order files
+- [ ] Check reproducibility
 - [ ] Update readme
+
+## Usage
